@@ -1,0 +1,756 @@
+---
+title: "Oral bacteriomes"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    theme: cerulean
+ 
+date: "2022-12-27"
+---
+
+# Packages loading 
+
+```{r}
+library(phyloseq)
+library(cowplot)
+library(picante)
+library(TSA)
+library(multcomp)
+library(microbiome)
+library(mvabund)
+library(geepack)
+library(doBy)
+library(lattice)
+library(MuMIn)
+library("DESeq2")
+library(tidyverse)
+library(stringr)
+library(fantaxtic)
+```
+
+```{r}
+readRDS(file = "oral_bacteriome.RDS") -> ps1
+ps1
+```
+# Filter samples and ASVs 
+
+### Remove singletons
+```{r}
+ps1 <- prune_taxa(taxa_sums(ps1) > 1, ps1)
+ps1
+```
+### Remove samples with less than 1000 reads
+```{r}
+ps1 = prune_samples(sample_sums(ps1) >= 1000, ps1)
+ps1
+min(colSums(otu_table(ps1)))
+
+summarize_phyloseq(ps1)
+```
+
+# Core Microbiome 
+
+```{r}
+ps1.core <- core(ps1, detection = 0, prevalence = 0.9)
+core.taxa <- taxa(ps1.core);core.taxa
+class(core.taxa)
+```
+### Get the taxonomy data
+```{r}
+tax.mat <- tax_table(ps1.core)
+tax.df <- as.data.frame(tax.mat)
+```
+### Add the ASVs to last column
+```{r}
+tax.df$ASV <- rownames(tax.df)
+```
+### Select taxonomy of only. Those ASVs that are core members based on the thresholds that were used.
+```{r}
+core.taxa.class <- dplyr::filter(tax.df, rownames(tax.df) %in% core.taxa)
+knitr::kable(head(core.taxa.class))
+knitr::kable(core.taxa.class)
+```
+### Estimate read proportions for the core
+```{r}
+rank_names(ps1.core, errorIfNULL=TRUE) 
+taxon <- tax_glom(ps1.core, taxrank = "Species")
+table_all<-cbind(tax_table(taxon),otu_table(taxon))
+table_all_t<-t(data.matrix(table_all))
+write.csv(table_all_t,file="core_N.csv")
+summarize_phyloseq(ps1)
+```
+# Data normalization
+```{r}
+diagdds = phyloseq_to_deseq2(ps1, ~season) # Any variable of the metadata would work to create the DESeq object
+```
+
+### Calculate geometric means
+```{r}
+gm_mean = function(x, na.rm=TRUE){
+  exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))
+}
+geoMeans = apply(counts(diagdds), 1, gm_mean)
+```
+### Estimate size factors
+```{r}
+diagdds = estimateSizeFactors(diagdds, geoMeans = geoMeans)
+```
+### Get Normalized read counts
+```{r}
+normcounts <- counts(diagdds, normalized = TRUE)
+```
+### Round read counts
+```{r}
+round(normcounts, digits = 0) -> normcountsrd
+```
+### Transform matrix of normalized counts to phyloseq object
+```{r}
+otu_table(normcountsrd, taxa_are_rows = TRUE) -> ncr
+# Replace otu_table in original phyloseq object
+otu_table(ps1) <- ncr
+```
+
+# Estimate alpha-diversity including pd
+```{r}
+otuD<-as.data.frame(t(otu_table(ps1)))
+phylodiversityRAREF_Q<-pd(otuD, phy_tree(ps1), include.root=TRUE) ### Phylogenetic diversity. Include root=True tree rooted via midpoint
+diversityRAREF_Q<-estimate_richness(ps1)
+diversityRAREF_Q1<-cbind(sample_data(ps1),diversityRAREF_Q,phylodiversityRAREF_Q) 
+```
+
+```{r}
+library(ggpubr)
+```
+```{r}
+my_comparisons <- list(c("AS", "CT"),c("AR", "CT"),c("ARAS", "CT"),c("AS", "AR"),c("AS", "ARAS"),c("AR", "ARAS")) # List here the group pairs to compare statistically
+```
+
+```{r}
+compare_means(formula = Chao1~asthma_rhinitis1,data = diversityRAREF_Q1, method = "wilcox.test", exact= FALSE)
+chao <- ggplot(diversityRAREF_Q1, aes(factor(asthma_rhinitis1), Chao1))
+chao2<-chao + geom_boxplot(aes(fill = factor(asthma_rhinitis1)),outlier.colour = "black", outlier.size = 0.2)+ geom_jitter(size=0.2,shape=1)+panel_border(colour = "black", size = 0.5)+ ggtitle("Chao1 richness")+labs(y = "Chao1 richness") + stat_compare_means(mapping = NULL, comparisons = my_comparisons, hide.ns = FALSE, label = "p.signif",  label.x = NULL, label.y = NULL, exact =FALSE)
+```
+
+```{r}
+compare_means(formula = Shannon~asthma_rhinitis1,data = diversityRAREF_Q1, method = "wilcox.test", exact= FALSE)
+shan <- ggplot(diversityRAREF_Q1, aes(factor(asthma_rhinitis1), Shannon))
+shan2<-shan + geom_boxplot(aes(fill = factor(asthma_rhinitis1)),outlier.colour = "black", outlier.size = 0.2)+ geom_jitter(size=0.2,shape=1)+panel_border(colour = "black", size = 0.5)+ ggtitle("Shannon diversity")+labs(y = "Shannon diversity") + stat_compare_means(mapping = NULL, comparisons = my_comparisons, hide.ns = FALSE, label = "p.signif",  label.x = NULL, label.y = NULL, exact =FALSE)
+```
+
+```{r}
+compare_means(formula = ACE~asthma_rhinitis1,data = diversityRAREF_Q1, method = "wilcox.test", exact= FALSE)
+ACE <- ggplot(diversityRAREF_Q1, aes(factor(asthma_rhinitis1), ACE))
+ACE2<- ACE + geom_boxplot(aes(fill = factor(asthma_rhinitis1)),outlier.colour = "black", outlier.size = 0.2)+ geom_jitter(size=0.2,shape=1)+panel_border(colour = "black", size = 0.5)+ ggtitle("ACE diversity")+labs(y = "ACE diversity") + stat_compare_means(mapping = NULL, comparisons = my_comparisons, hide.ns = FALSE, label = "p.signif",  label.x = NULL, label.y = NULL, exact =FALSE)
+```
+
+```{r}
+compare_means(formula = PD~asthma_rhinitis1,data = diversityRAREF_Q1, method = "wilcox.test", exact= FALSE)
+phyl <- ggplot(diversityRAREF_Q1, aes(factor(asthma_rhinitis1), PD))
+phyl2<- phyl + geom_boxplot(aes(fill = factor(asthma_rhinitis1)),outlier.colour = "black", outlier.size = 0.2)+ geom_jitter(size=0.2,shape=1)+panel_border(colour = "black", size = 0.5)+ ggtitle("Phylogenetic diversity")+labs(y = "Phylogenetic  diversity") + stat_compare_means(mapping = NULL, comparisons = my_comparisons, hide.ns = FALSE, label = "p.signif",  label.x = NULL, label.y = NULL, exact =FALSE)
+```
+
+```{r}
+plot_grid(chao2, shan2, ACE2, phyl2, nrows=2, cols=2, align = "v")  
+```
+
+# Estimate beta-diversity 
+
+### Sample pairs
+```{r}
+ps2 <- subset_samples(ps1, asthma_rhinitis1 == "AR" | asthma_rhinitis1 == "CT"); ps2
+
+otuD<-as.data.frame(t(otu_table(ps2)))
+diversityRAREF_Q1<-cbind(sample_data(ps2)) 
+
+uniun<-phyloseq::distance(ps2, method="unifrac")
+uniweigh<-phyloseq::distance(ps2, method="wunifrac")
+brayd<-phyloseq::distance(ps2, method="bray")
+jaccd<-phyloseq::distance(ps2, method="jaccard")
+
+t1<-adonis2(uniun~diversityRAREF_Q1$asthma_rhinitis1, perm=10000); t1
+t1<-adonis2(uniweigh~diversityRAREF_Q1$asthma_rhinitis1, perm=10000); t1
+t1<-adonis2(brayd~diversityRAREF_Q1$asthma_rhinitis1, perm=10000); t1
+t1<-adonis2(jaccd~diversityRAREF_Q1$asthma_rhinitis1, perm=10000); t1
+```
+
+### All pairs
+
+```{r}
+uniun<-phyloseq::distance(ps1, method="unifrac")
+uniweigh<-phyloseq::distance(ps1, method="wunifrac")
+brayd<-phyloseq::distance(ps1, method="bray")
+jaccd<-phyloseq::distance(ps1, method="jaccard")
+```
+
+# PCoA plots
+```{r}
+p1 = phyloseq::plot_ordination(ps1, ordinate(ps1, method="PCoA", dist="unifrac", weighted=TRUE), type = "samples", color = "asthma_rhinitis1") # label="patient" 
+p1a=p1 + geom_point(size = 2) + ggtitle("PCoA Weigthed UNIFRAC") 
+p2 = phyloseq::plot_ordination(ps1, ordinate(ps1, method="PCoA", dist="unifrac"), type = "samples", color = "asthma_rhinitis1") # label="patient" 
+p2a=p2 + geom_point(size = 2) + ggtitle("PCoA Unweigthed UNIFRAC") 
+p3 = phyloseq::plot_ordination(ps1, ordinate(ps1, method="PCoA", dist="brayd"), type = "samples", color = "asthma_rhinitis1") 
+p3a=p3 + geom_point(size = 2) + ggtitle("PCoA Bray-Curtis") 
+p4 = phyloseq::plot_ordination(ps1, ordinate(ps1, method="PCoA", dist="jaccd"), type = "samples", color = "asthma_rhinitis1") 
+p4a=p4 + geom_point(size = 2) + ggtitle("PCoA Jaccard") 
+
+p1a
+p2a
+p3a
+p4a
+```
+
+```{r}
+plot_grid(p1a, p2a, p3a, p4a, ncol = 2, nrows=2, align = "v")
+```
+
+
+# Statistical analyses of taxa % and other variables 
+
+```{r}
+bygenus <- tax_glom(ps1, taxrank = "Phylum") # ASV in taxa_lineage below = phylum name
+
+bygenus.tr <- transform_sample_counts(bygenus, function (x) x/sum(x))
+bygenus.tr.f <- filter_taxa(bygenus.tr, function (x) mean(x) > 1e-2, TRUE) # filter taxa below 5%
+taxa_names(bygenus.tr.f)
+taxa_lineage <- tax_table(bygenus.tr.f);taxa_lineage
+taxa_abun<-as.data.frame(t(otu_table(bygenus.tr.f)))
+taxa_abun1<-cbind(sample_data(ps1),taxa_abun) 
+```
+```{r}
+my_comparisons <- list(c("AS", "CT"),c("AR", "CT"),c("ARAS", "CT"),c("AS", "AR"),c("AS", "ARAS"),c("AR", "ARAS")) # List here the group pairs to compare statistically
+```
+
+```{r}
+library(ggpubr)
+```
+
+### Run text for each dominant ASV corresponding to phyla and genera
+```{r}
+compare_means(formula = ASV30~asthma_rhinitis1, data = taxa_abun1, method = "wilcox.test", exact= FALSE)
+```
+
+# PICRUSt2 commands
+
+### Bash section 
+
+```{bash eval= FALSE}
+place_seqs.py -s ASVs.fasta -o out.tre -p 9 --intermediate intermediate/place_seqs
+```
+
+```{bash eval= FALSE}
+hsp.py -i 16S -t ASV_tree.txt -o marker_predicted_and_nsti.tsv.gz -p 9 -n
+```
+
+```{bash eval= FALSE}
+hsp.py -i EC -t ASV_tree.txt -o marker_predicted_and_nsti.tsv.gz -p 9 -n
+```
+
+```{bash eval= FALSE}
+metagenome_pipeline.py -i ASVs.biom -m marker_predicted_and_nsti.tsv.gz -f EC_predicted.tsv.gz -o EC_metagenome_out --strat_out -p 9
+```
+
+```{bash eval= FALSE}
+pathway_pipeline.py -i EC_metagenome_out/pred_metagenome_contrib.tsv.gz -o pathways_out -p 9
+```
+
+```{bash eval= FALSE}
+add_descriptions.py -i EC_metagenome_out/pred_metagenome_unstrat.tsv.gz -m EC -o EC_metagenome_out/pred_metagenome_unstrat_descrip.tsv.gz
+```
+
+```{bash eval= FALSE}
+add_descriptions.py -i pathways_out/path_abun_unstrat.tsv.gz -m METACYC -o pathways_out/path_abun_unstrat_descrip.tsv.gz
+```
+
+### End of bash section
+
+
+
+```{r}
+library("data.table")
+library("ComplexHeatmap")
+library("RColorBrewer")
+library("circlize")
+```
+
+
+
+### Laod pathway table
+
+```{r}
+pws_table <- fread("path_abun_unstrat_descrip.tsv.gz")
+```
+
+
+### Load phyloseq object
+
+```{r} 
+oral_CT_ps <- read_rds("pathway_CT.RDS")
+oral_AR_ps <- read_rds("pathway_AR.RDS")
+oral_ARAS_ps <- read_rds("pathway_ARAS.RDS")
+```
+
+```{r}
+merged_oral <- merge_phyloseq(oral_CT_ps, oral_AR_ps, oral_ARAS_ps)
+
+sample_data(merged_oral)$sample_code <- gsub("_S.+$","",sample_data(merged_oral)$sample_code)
+```
+
+```{r}
+my_design <- ~ sex + age + asthma_rhinitis
+```
+
+```{r}
+my_pw_counts_oral <- pws_table %>%
+  dplyr::select(pathway, description, sample_data(merged_oral)$sample_code)
+
+
+only_cs_my_pw_oral <- my_pw_counts_oral[,-c(1:2)]
+
+
+ds_obj_oral <- DESeqDataSetFromMatrix(countData = round(only_cs_my_pw_oral),
+                                       colData = sample_data(merged_oral),
+                                       design = my_design)
+
+
+ds_oral_analysis <- DESeq(ds_obj_oral)
+```
+
+
+```{r}
+ARAS_vs_CT_wald <- results(ds_oral_analysis, contrast = c("asthma_rhinitis", "AR", "NO"))
+
+AR_vs_CT_wald <- results(ds_oral_analysis, contrast = c("asthma_rhinitis", "RN", "NO"))
+
+ARAS_vs_AR_wald <- results(ds_oral_analysis, contrast = c("asthma_rhinitis", "AR", "RN"))
+```
+
+
+
+### Subset for p-value < 0.05
+
+```{r}
+oral_ARAS_CT_sigres <- ARAS_vs_CT_wald %>%
+  data.frame() %>%
+  rownames_to_column(var = "pathway") %>%
+  as_tibble() %>%
+  dplyr::filter(padj < 0.05)
+
+```
+
+```{r}
+oral_AR_CT_sigres <- AR_vs_CT_wald %>%
+  data.frame() %>%
+  rownames_to_column(var = "pathway") %>%
+  as_tibble() %>%
+  dplyr::filter(padj < 0.05)
+
+```
+
+```{r}
+oral_ARAS_vs_AR_sigres <- ARAS_vs_AR_wald %>%
+  data.frame() %>%
+  rownames_to_column(var = "pathway") %>%
+  as_tibble() %>%
+  dplyr::filter(padj < 0.05)
+
+```
+
+```{r}
+oral_ARAS_CT_sigres$pathway <- pws_table$description[as.numeric(oral_ARAS_CT_sigres$pathway)]
+
+
+oral_ARAS_CT_sigres <- oral_ARAS_CT_sigres[order(oral_ARAS_CT_sigres$log2FoldChange, decreasing = TRUE),]
+
+
+oral_ARAS_CT_sigres <- oral_ARAS_CT_sigres[abs(oral_ARAS_CT_sigres$log2FoldChange) >= 2,]
+
+
+oral_ARAS_CT_sigres
+
+```
+
+```{r}
+oral_AR_CT_sigres$pathway <- pws_table$description[as.numeric(oral_AR_CT_sigres$pathway)]
+
+oral_AR_CT_sigres <- oral_AR_CT_sigres[order(oral_AR_CT_sigres$log2FoldChange, decreasing = TRUE),]
+
+oral_AR_CT_sigres <- oral_AR_CT_sigres[abs(oral_AR_CT_sigres$log2FoldChange) >= 2,]
+
+oral_AR_CT_sigres
+```
+
+
+```{r}
+oral_ARAS_vs_AR_sigres$pathway <- pws_table$description[as.numeric(oral_ARAS_vs_AR_sigres$pathway)]
+oral_ARAS_vs_AR_sigres <- oral_ARAS_vs_AR_sigres[order(oral_ARAS_vs_AR_sigres$log2FoldChange,
+                                                     decreasing = T),]
+
+oral_ARAS_vs_AR_sigres <- oral_ARAS_vs_AR_sigres[abs(oral_ARAS_vs_AR_sigres$log2FoldChange) >= 2,]
+oral_ARAS_vs_AR_sigres
+```
+
+
+
+
+## From these last objects, prepare log2foldchange vectors
+
+
+
+### Log2fc for ARAS vs CT
+
+```{r}
+log2fc_oral_ARAS_CT <- oral_ARAS_CT_sigres$log2FoldChange %>%
+  as.matrix()
+
+
+colnames(log2fc_oral_ARAS_CT) <- "log2FC"
+
+```
+
+```{r}
+log2fc_oral_ARAS_CT_colors <- colorRamp2(c(min(log2fc_oral_ARAS_CT),0,max(log2fc_oral_ARAS_CT)),
+                                        c("blue","white","orange"))
+
+
+
+hm_oral_CT_ARAS_fc <- Heatmap(log2fc_oral_ARAS_CT, cluster_rows = F, row_labels = oral_ARAS_CT_sigres$pathway,
+                             col = log2fc_oral_ARAS_CT_colors, width = unit(30,"mm"),
+                             cell_fun = function(j,i,x,y,w,h,col){
+                               grid.text(round(log2fc_oral_ARAS_CT[i,j],2),x,y)
+                             }, name = "log2FC", column_labels = "")
+
+
+
+draw(hm_oral_CT_ARAS_fc, heatmap_legend_side = "left")
+```
+
+
+### Log2fc for AR and CT
+
+
+```{r}
+log2fc_oral_AR_CT <- oral_AR_CT_sigres$log2FoldChange %>%
+  as.matrix()
+
+colnames(log2fc_oral_AR_CT) <- "log2FC"
+
+log2fc_oral_AR_CT_colors <- colorRamp2(c(min(log2fc_oral_AR_CT),0,max(log2fc_oral_AR_CT)),
+                                        c("blue","white","orange"))
+
+
+hm_oral_CT_AR_fc <- Heatmap(log2fc_oral_AR_CT, cluster_rows = F, row_labels = oral_AR_CT_sigres$pathway,
+                             width = unit(30,"mm"), col = log2fc_oral_AR_CT_colors,
+                             cell_fun = function(i,j,x,y,w,h,col){
+                               grid.text(round(log2fc_oral_AR_CT[j,i],2),x,y)
+                             }, name = "log2FC", column_labels = "")
+
+
+draw(hm_oral_CT_AR_fc, heatmap_legend_side = "left")
+```
+
+
+
+
+### Log2fc for ARAS vs AR
+
+```{r}
+log2fc_oral_ARAS_AR <- oral_ARAS_vs_AR_sigres$log2FoldChange %>%
+  as.matrix()
+
+colnames(log2fc_oral_ARAS_AR) <- "log2FC"
+
+
+log2fc_oral_ARAS_AR_colors <- colorRamp2(c(min(log2fc_oral_ARAS_AR),0,max(log2fc_oral_ARAS_AR)),
+                                        c("blue","white","orange"))
+
+
+hm_oral_ARAS_AR_fc <- Heatmap(log2fc_oral_ARAS_AR, cluster_rows = F, row_labels = oral_ARAS_vs_AR_sigres$pathway,
+                             width = unit(30,"mm"), col = log2fc_oral_ARAS_AR_colors,
+                             cell_fun = function(i,j,x,y,w,h,col){
+                               grid.text(round(log2fc_oral_ARAS_AR[j,i],2),x,y)
+                             }, name = "log2FC", column_labels = "")
+
+
+draw(hm_oral_ARAS_AR_fc, heatmap_legend_side = "left")
+
+```
+
+
+# Arrange phyloseq objects for network analysis
+
+```{r}
+oral_ARAS <- read_rds("pathway_ARAS.RDS")
+oral_AR <- read_rds("pathway_AR.RDS")
+oral_CT <- read_rds("pathway_CT.RDS")
+```
+
+```{r}
+library("microbiomeutilities")
+```
+
+### Define best hit of classification
+```{r}
+oral_ARAS <- format_to_besthit(oral_ARAS, prefix = "")
+oral_AR <- format_to_besthit(oral_AR, prefix = "")
+oral_CT <- format_to_besthit(oral_CT, prefix = "")
+```
+
+### Agglomerate taxa at species level
+```{r}
+oral_ARAS <- tax_glom(oral_ARAS, taxrank = rank_names(oral_ARAS)[7])
+oral_AR <- tax_glom(oral_AR, taxrank = rank_names(oral_AR)[7])
+oral_CT <- tax_glom(oral_CT, taxrank = rank_names(oral_CT)[7])
+```
+
+### Filter out low prevalent taxa
+
+```{r}
+library("metagMisc")
+```
+
+```{r}
+oral_ARASprv <- phyloseq_filter_prevalence(oral_ARAS, prev.trh = 0.10 , abund.trh = 3,
+                                          threshold_condition = "OR", abund.type = "median")
+
+oral_ARprv <- phyloseq_filter_prevalence(oral_AR, prev.trh = 0.10 , abund.trh = 3,
+                                          threshold_condition = "OR", abund.type = "median")
+
+oral_CTprv <- phyloseq_filter_prevalence(oral_CT, prev.trh = 0.10 , abund.trh = 3,
+                                          threshold_condition = "OR", abund.type = "median" )
+
+```
+
+### Remove non prokaryotic ASVs
+
+```{r}
+taxa_forfilter <- c("Chloroplast", "Mitochondria","Eukaryota")
+
+ps_list = list(oral_ARASprv, oral_ARprv, oral_CTprv)
+
+for (i in 1:length(ps_list)) { 
+  ps_list[[i]] <- subset_taxa(ps_list[[i]],
+                              !Domain %in% taxa_forfilter & 
+                                !Phylum %in% taxa_forfilter & 
+                                !Class %in% taxa_forfilter & 
+                                !Order %in% taxa_forfilter & 
+                                !Family %in% taxa_forfilter & 
+                                !Genus %in% taxa_forfilter )   }
+
+oralARAS <- ps_list[[1]]
+oralAR <- ps_list[[2]]
+oralCT <- ps_list[[3]]
+```
+
+```{r}
+library("SpiecEasi")  
+```
+
+# Networks calculation using neighborhood selection (mb) method
+
+
+
+```{r}
+oralCT_net = spiec.easi(oralCT, method = "mb", nlambda = 20,
+                         lambda.min.ratio = 1e-2, pulsar.params = list(rep.num=50,
+                                                                       ncores=11))
+
+
+oralARAS_net = spiec.easi(oralARAS, method = "mb", nlambda = 20,
+                         lambda.min.ratio = 1e-2, pulsar.params = list(rep.num=50,
+                                                                       ncores=11))
+
+
+oralAR_net = spiec.easi(oralAR, method = "mb", nlambda = 20,
+                         lambda.min.ratio = 1e-2, pulsar.params = list(rep.num=50,
+                                                                       ncores=11))
+
+# the resulting variables were stored in RDS format and exported for local analysis
+```
+
+
+
+
+### Retrieve adjacency matrices 
+
+```{r}
+library("NetCoMi")
+```
+
+
+```{r}
+adj_oralARAS <- symBeta(getOptBeta(oralARAS_net), mode = "maxabs") %>%
+  as.matrix()
+
+rownames(adj_oralARAS) <- colnames(otu_table(oralARAS)) 
+colnames(adj_oralARAS) <- colnames(otu_table(oralARAS))
+
+```
+
+```{r}
+adj_oralAR <- symBeta(getOptBeta(oralAR_net), mode = "maxabs") %>%
+  as.matrix()
+
+rownames(adj_oralAR) <- colnames(otu_table(oralAR))
+colnames(adj_oralAR) <- colnames(otu_table(oralAR))
+```
+
+```{r}
+adj_oralCT <- symBeta(getOptBeta(oralCT_net), mode = "maxabs") %>%
+  as.matrix()
+
+rownames(adj_oralCT) <- colnames(otu_table(oralCT))
+colnames(adj_oralCT) <- colnames(otu_table(oralCT))
+```
+
+
+### Construct the networks
+
+```{r}
+oralARAS_netcomi <- netConstruct(data = adj_oralARAS,
+                                normMethod = "none", zeroMethod = "none",
+                                sparsMethod = "none", dataType = "condDependence",
+                                verbose = 3, seed = 1234)
+```
+
+```{r}
+oralAR_netcomi <- netConstruct(data = adj_oralAR,
+                                normMethod = "none", zeroMethod = "none",
+                                sparsMethod = "none", dataType = "condDependence",
+                                verbose = 3, seed = 1234)
+```
+
+```{r}
+oralCT_netcomi <- netConstruct(data = adj_oralCT,
+                                normMethod = "none", zeroMethod = "none",
+                                sparsMethod = "none", dataType = "condDependence",
+                                verbose = 3, seed = 1234)
+```
+
+
+
+# Analyze the networks 
+
+```{r}
+oralARAS_analyzed <- netAnalyze(oralARAS_netcomi, centrLCC = FALSE, avDissIgnoreInf = TRUE, 
+                               hubPar = "degree", hubQuant = 0.90,
+                               normDeg = TRUE, normBetw = TRUE, normEigen = TRUE, verbose = 2)
+
+```
+
+```{r}
+
+oralAR_analyzed <- netAnalyze(oralAR_netcomi, centrLCC = FALSE, avDissIgnoreInf = TRUE,
+                               hubPar = "degree", hubQuant = 0.90,
+                               normDeg = TRUE, normBetw = TRUE, normEigen = TRUE, verbose = 2)
+
+```
+
+
+```{r}
+oralCT_analyzed <- netAnalyze(oralCT_netcomi, centrLCC = FALSE, avDissIgnoreInf = TRUE,
+                               hubPar = "degree", hubQuant = 0.90,
+                               normDeg = TRUE, normBetw = TRUE, normEigen = TRUE, verbose = 2)
+
+```
+
+
+
+
+## Label the networks nodes by the best hit and remove unwanted characters
+
+
+### oral ARAS labels
+
+```{r}
+tax_oralARAS <- tax_table(oralARAS) %>%
+  as.data.frame() %>%
+  dplyr::mutate(lab = paste(Genus, Species, sep = " ")) %>%
+  dplyr::select(-best_hit)
+
+tax_oralARAS$lab <- gsub("g__.+$", "", tax_oralARAS$lab)
+tax_oralARAS$lab <- gsub("f__.*?\\s", "", tax_oralARAS$lab)
+tax_oralARAS$lab <- gsub("f__","", tax_oralARAS$lab)
+tax_oralARAS$lab <- gsub("o__.*?\\s", "", tax_oralARAS$lab)
+tax_oralARAS$lab <- gsub("o__", "", tax_oralARAS$lab)
+
+
+
+labels_oralARAS <- tax_oralARAS$lab
+names(labels_oralARAS) <- rownames(tax_oralARAS)
+
+```
+
+
+
+### oral AR labels
+
+```{r}
+tax_oralAR <- tax_table(oralAR) %>%
+  as.data.frame() %>%
+  dplyr::mutate(lab = paste(Genus, Species, sep = " ")) %>%
+  dplyr::select(-best_hit)
+
+tax_oralAR$lab <- gsub("g__.+$", "", tax_oralAR$lab)
+tax_oralAR$lab <- gsub("f__.*?\\s", "", tax_oralAR$lab)
+tax_oralAR$lab <- gsub("f__","", tax_oralAR$lab)
+tax_oralAR$lab <- gsub("o__.*?\\s", "", tax_oralAR$lab)
+tax_oralAR$lab <- gsub("o__", "", tax_oralAR$lab)
+
+
+labels_oralAR <- tax_oralAR$lab
+names(labels_oralAR) <- rownames(tax_oralAR)
+```
+
+
+
+### oral CT labels
+
+```{r}
+tax_oralCT <- tax_table(oralCT) %>%
+  as.data.frame() %>%
+  dplyr::mutate(lab = paste(Genus, Species, sep = " ")) %>%
+  dplyr::select(-best_hit)
+
+tax_oralCT$lab <- gsub("g__.+$", "", tax_oralCT$lab)
+tax_oralCT$lab <- gsub("f__.*?\\s", "", tax_oralCT$lab)
+tax_oralCT$lab <- gsub("f__","", tax_oralCT$lab)
+tax_oralCT$lab <- gsub("o__.*?\\s", "", tax_oralCT$lab)
+tax_oralCT$lab <- gsub("o__", "", tax_oralCT$lab)
+
+
+labels_oralCT <- tax_oralCT$lab
+names(labels_oralCT) <- rownames(tax_oralCT)
+```
+
+
+# Plot oral bacteriome networks and color nodes by clusters/modules
+
+```{r}
+oralARAS_circle <- plot(oralARAS_analyzed, cexNodes = 1.3, 
+                       cexHubLabels = 1.9 , cexLabels = 2.7, cexTitle = 2.5, nodeColor = "cluster",
+                       cexHubs = 1.6, rmSingles = "all", 
+                       repulsion = 2.8, 
+                       layout = "layout_nicely", labels = labels_oralARAS) 
+```
+
+```{r}
+
+oralAR_circle <- plot(oralAR_analyzed, cexNodes = 1.3, 
+                       cexHubLabels = 1.9 , cexLabels = 2.7, cexTitle = 2.5, nodeColor = "cluster",
+                       cexHubs = 1.6, rmSingles = "all", 
+                       repulsion = 2.8, 
+                       layout = "layout_nicely", labels = labels_oralAR) 
+
+```
+
+
+```{r}
+oralCT_circle <- plot(oralCT_analyzed, cexNodes = 1.3, 
+                       cexHubLabels = 1.9 , cexLabels = 2.7, cexTitle = 2.5, nodeColor = "cluster",
+                       cexHubs = 1.6, rmSingles = "all", 
+                       repulsion = 2.8, 
+                       layout = "layout_nicely", labels = labels_oralCT )
+
+```
+
